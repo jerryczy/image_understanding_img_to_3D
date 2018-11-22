@@ -1,1 +1,2 @@
-# image_understanding_img_to_3D
+# Image Understanding image to 3D object
+CSC420 project Fall 2018
