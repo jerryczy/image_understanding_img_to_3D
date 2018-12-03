@@ -13,7 +13,7 @@ function read_images(path)
             if size(f, 2) == 0
                 continue;
             end
-            data_path = strcat('.\sift_data\' ,dirlist(i).name(1:end-3), 'csv');
+            data_path = strcat(path ,dirlist(i).name(1:end-3), 'csv');
             dlmwrite(data_path, f);
             dlmwrite(data_path, d, '-append');
         end
