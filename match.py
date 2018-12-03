@@ -4,9 +4,9 @@ import sys
 import time
 import numpy as np
 import cv2
-import random
 from scipy.spatial import KDTree
-from sklearn.cluster import KMeans
+from scipy.optimize import least_squares
+import lm_single_step
 
 DATA_DIR = '../dataset/Monster/data/'
 # DATA_DIR = '../dataset/SculptFace/'
@@ -234,98 +234,7 @@ def image_matching(img_idx, candidate_idx, name_idx, indexes, features, N=10000)
 	# return fundamental_matrix, inlier_number, inlier_set
 
 
-# two pass algorithm for finding connected component
-def connected_component(img_name):
-	img = cv2.imread(os.path.join(DATA_DIR, img_name + '.jpg'), 0) # read in grayscale
-	rows, cols = img.shape
-	labels = np.zeros(img.shape, dtype=int)
-	connected = {}
-	backgroud = img[0][0] // 10 # is this a good choice?
-	new_label = 1
-	# first pass
-	for r in range(rows):
-		for c in range(cols):
-			if (img[r][c] // 10) != backgroud:
-				# use 8 connectivity, find encontered neighbors
-				intensity = []
-				label_neighbor = []
-				neighbors = []
-				if r > 0 and c > 0:
-					neighbors.append((r-1, c-1))
-				if r > 0:
-					neighbors.append((r-1, c))
-				if r > 0 and c < cols-1:
-					neighbors.append((r-1, c+1))
-				if c > 0:
-					neighbors.append((r, c-1))
-				# compare and assign label
-				new_label_flag = False
-				if neighbors:
-					count_bg = 0
-					has_label = False
-					for x, y in neighbors:
-						if (img[x][y] // 10) == backgroud:
-							count_bg += 1
-						elif has_label and ((img[r][c] // 10) == (img[x][y] // 10)):
-							label_1 = labels[r][c]
-							label_2 = labels[x][y]
-							if (label_1 in connected) and (label_2 in connected):
-								connected[label_1].append(label_2)
-								connected[label_2].append(label_1)
-							elif label_1 in connected:
-								connected[label_1].append(label_2)
-								connected[label_2] = connected[label_1]
-							elif label_2 in connected:
-								connected[label_2].append(label_1)
-								connected[label_1] = connected[label_2]
-							else:
-								connected[label_1] = [label_2, label_2]
-								connected[label_2] = [label_2, label_1]
-						elif (img[r][c] // 10) == (img[x][y] // 10):
-							labels[r][c] = labels[x][y]
-							has_label = True
-						else:
-							new_label_flag = True
-					if count_bg == len(neighbors):
-						new_label_flag = True
-				else:
-					new_label_flag = True
-				if new_label_flag:
-					labels[r][c] = new_label
-					new_label += 1
-	# second pass
-	for r in range(rows):
-		for c in range(cols):
-			if labels[r][c] in connected:
-				labels[r][c] = min(connected[labels[r][c]])
-	return labels
-
-
-def connected_component_cv(img_name):
-	img = cv2.imread(os.path.join(DATA_DIR, img_name + '.jpg'), 0) # read in grayscale
-	img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)[1]  # convert to binary
-	# img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\
- #            cv2.THRESH_BINARY, 11, 5)
-	_, labels = cv2.connectedComponents(img)
-	# # for display
-	# cv2.imwrite(img_name + '_binary.jpg', img)
-	# label_hue = np.uint8(179*labels/np.max(labels))
-	# blank_ch = 255*np.ones_like(label_hue)
-	# labeled_img = cv2.merge([label_hue, blank_ch, blank_ch])
-	# labeled_img = cv2.cvtColor(labeled_img, cv2.COLOR_HSV2BGR)
-	# labeled_img[label_hue==0] = 0
-	# cv2.imwrite(img_name + '_label.jpg', labeled_img)
-	return labels
-
-
-# partition matched into set of connected pairs
-def match_connected_component(labels, image_pair):
-	'''
-	Out: 
-		component: dict{label:[match]}
-		each match consist 6 entries: (img1_idx, x1, y1, img2_idx, x2, y2)
-		* special: component['max'] contains the largest label
-	'''
+def component_track(image_pair):
 	# find a linked series of images that match one to the other
 	linked = [0]
 	new = image_pair[0][0]
@@ -333,43 +242,55 @@ def match_connected_component(labels, image_pair):
 		linked.append(new)
 		new = image_pair[new][0]
 	print(linked)
-	# convert the labels to match the first image
-	max_label = np.amax(labels[0]) + 1
-	for idx in linked[:-1]:
-		cand_idx, _, _, inlier_set = image_pair[idx]
-		img_label = labels[idx]
-		cand_label = labels[cand_idx]
-		label_match = {}
-		label_match[0] = 0 # backgroud?
+	# find components track
+	# initialized as first image-candidate match
+	for x1, y1, x2, y2 in image_pair[0][-1]:
+		components.append([(x1, y1), (x2, y2)])
+	for idx in linked[1:]:
+		inlier_set = image_pair[idx][-1]
 		for x1, y1, x2, y2 in inlier_set:
-			if cand_label[x2][y2] not in label_match:
-				label_match[cand_label[x2][y2]] = img_label[x1][y1]
-			elif (label_match[cand_label[x2][y2]] != img_label[x1][y1]):
-				print('find a false match') # TODO: deal with it
-		for i in range(np.amax(cand_label)):
-			if i not in label_match:
-				label_match[i] = max_label
-				max_label += 1
-		for row in cand_label.shape[0]:
-			for col in cand_label.shape[1]:
-				cand_label[row][col] = label_match[cand_label[row][col]]
-		labels[cand_idx] = cand_label
-	# order matched into connected components
-	component = {}
-	max_component = 1
-	for idx in linked[:-1]:
-		cand_idx, _, _, inlier_set = image_pair[idx]
-		img_label = labels[idx]
-		for x1, y1, x2, y2 in inlier_set:
-			entry = (idx, x1, y1, cand_idx, x2, y2)
-			if img_label[x1][y1] in component:
-				component[img_label[x1][y1]].append(entry)
-			else:
-				component[img_label[x1][y1]] = [entry]
-			if img_label[x1][y1] > max_component:
-				max_component = img_label[x1][y1]
-	component['max'] = max_component
-	return component
+			new_entry = True
+			for comp in components:
+				if (x1, y1) in comp and (x1, y1) == comp[-1]:
+					comp.append((x2, y2))
+					new_entry = False
+				else:
+					comp.append(None)
+			if new_entry:
+				lst = [None for _ in range(idx-1)] # fill missing track
+				lst.extend([(x1, y1), (x2, y2)])
+				components.append(lst)
+	return components, linked
+
+
+def partition(lst):
+	start = 0
+	end = len(lst)
+	for idx, p in enumerate(lst):
+		if p:
+			start = idx
+			break
+	for idx, p in enumerate(reversed(lst)):
+		if p:
+			end = -idx
+			break
+	if end == 0:
+		end = len(lst)
+	lst.reverse()
+	return start, end
+
+
+def bundle_adjustment(lst, linked):
+	start, end = partition(lst)
+	lst = lst[start:end]
+	linked = linked[start:end]
+	def residual(x):
+		a, b, c = x
+
+		return np.array([0, 0, 0])
+
+
+	least_squares(residual, x0, method='lm', loss='huber')
 
 
 if __name__ == '__main__':
@@ -390,9 +311,7 @@ if __name__ == '__main__':
 			image_matching(i, candidates[i], name_idx, indexes, features)
 		image_pair.append((matched_img, fundamental_matrix, inlier_number, inlier_set))
 		print("--- %s seconds ---" % (time.time() - start_time))
-		# label = connected_component(img_name)
-		# label = connected_component_cv(img_name)
-		# print("--- %s seconds ---" % (time.time() - start_time))
-	component = match_connected_component(image_pair)
+	components, linked = component_track(image_pair)
 	print("--- %s seconds ---" % (time.time() - start_time))
 	for comp in component:
+		bundle_adjustment(comp, linked)
