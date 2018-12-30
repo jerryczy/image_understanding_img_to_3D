@@ -1,0 +1,3 @@
+1. download dataset
+2. Run read_images.m in matlab to produce SIFT features
+3. run match.py to get the 3D point cloud
